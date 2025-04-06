@@ -384,8 +384,8 @@ fn run_assembler(base_name: &str) -> io::Result<()> {
     println!("写入二进制文件: {}", output_binary);
     write_object_file(&img, &output_binary)?;
     
-    println!("写入文本格式文件: {}", output_text);
-    fs::write(&output_text, text_output)?;
+    // println!("写入文本格式文件: {}", output_text);
+    // fs::write(&output_text, text_output)?;
     
     println!("汇编成功完成，共生成 {} 条指令", img.len());
     Ok(())
