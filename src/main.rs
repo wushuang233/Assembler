@@ -9,24 +9,45 @@ fn encode_a(opcode: u32, rd: u8, rs1: u8, rs2: u8) -> u32 {
     (opcode & 0x3F)
 }
 
-// B类型指令编码（addi）
-// 格式: imm[26] imm[25:21] imm[20:16] rs1[15:11] rd[10:6] opcode[5:0]
-fn encode_addi(rd: u8, rs1: u8, imm: i16) -> u32 {
-    let imm_u32 = imm as u32 & 0x7FF;
-    let imm_low = imm_u32 & 0x1F;
-    let imm_high = (imm_u32 >> 5) & 0x3F;
+// B类型指令编码（addi/lui/lw）
+// 格式: imm[16位]_rs1[5位]_rd[5位]_opcode[6位]
+fn encode_b(opcode: u32, rd: u8, rs1: u8, imm: i16) -> u32 {
+    println!("B类型编码: opcode=0x{:X}, rd={}, rs1={}, imm=0x{:X} (二进制: {:016b})", 
+             opcode, rd, rs1, imm, imm);
+             
+    // 保留立即数的所有16位
+    let imm_u32 = imm as u32 & 0xFFFF;
+    println!("imm_u32: 0x{:X} (二进制: {:016b})", imm_u32, imm_u32);
     
-    ((imm_high >> 5) << 26) |
-    ((imm_high & 0x1F) << 21) |
-    ((imm_low) << 16) |
-    ((rs1 as u32) << 11) |
-    ((rd as u32) << 6) |
-    0b000010u32
+    // 构建指令
+    let result = (imm_u32 << 16) |            // 16位立即数放在[31:16]
+                 ((rs1 as u32 & 0x1F) << 11) | // rs1放在[15:11]
+                 ((rd as u32 & 0x1F) << 6) |   // rd放在[10:6]
+                 (opcode & 0x3F);              // opcode放在[5:0]
+                 
+    println!("最终编码结果: 0x{:X} (二进制: {:032b})", result, result);
+    result
 }
 
-// C类型指令编码（bne）
+// B类型指令编码之addi的专用函数
+fn encode_addi(rd: u8, rs1: u8, imm: i16) -> u32 {
+    encode_b(0b000010u32, rd, rs1, imm)
+}
+
+// B类型指令编码之lui的专用函数
+fn encode_lui(rd: u8, imm: i16) -> u32 {
+    // 使用标准B类型编码，不需要特殊处理
+    encode_b(0b000101u32, rd, 0, imm)
+}
+
+// B类型指令编码之lw的专用函数
+fn encode_lw(rd: u8, rs1: u8, offset: i16) -> u32 {
+    encode_b(0b000110u32, rd, rs1, offset)
+}
+
+// C类型指令编码（bne/sw/blt）
 // 格式: imm_high[31:21] rs2[20:16] rs1[15:11] imm_low[10:6] opcode[5:0]
-fn encode_bne(rs1: u8, rs2: u8, offset: i16) -> u32 {
+fn encode_c(opcode: u32, rs1: u8, rs2: u8, offset: i16) -> u32 {
     let offset_u32 = offset as u32;
     let imm_high = (offset_u32 >> 5) & 0x7FF;
     let imm_low = offset_u32 & 0x1F;
@@ -35,7 +56,22 @@ fn encode_bne(rs1: u8, rs2: u8, offset: i16) -> u32 {
     ((rs2 as u32) << 16) |
     ((rs1 as u32) << 11) |
     (imm_low << 6) |
-    0b000011u32
+    (opcode & 0x3F)
+}
+
+// C类型指令编码之bne的专用函数
+fn encode_bne(rs1: u8, rs2: u8, offset: i16) -> u32 {
+    encode_c(0b000011u32, rs1, rs2, offset)
+}
+
+// C类型指令编码之sw的专用函数
+fn encode_sw(rs1: u8, rs2: u8, offset: i16) -> u32 {
+    encode_c(0b000111u32, rs1, rs2, offset)
+}
+
+// C类型指令编码之blt的专用函数
+fn encode_blt(rs1: u8, rs2: u8, offset: i16) -> u32 {
+    encode_c(0b001000u32, rs1, rs2, offset)
 }
 
 
@@ -95,6 +131,46 @@ mod tests {
         println!("Actual   (halt): {:032b}", actual);
         assert_eq!(actual, expected);
     }
+    
+    #[test]
+    fn test_lui() {
+        // lui x2, 42 -> 0b00000000001_01010_00000_00010_000101
+        let expected = 0b00000000001_01010_00000_00010_000101;
+        let actual = encode_lui(2, 42);
+        println!("Expected (lui): {:032b}", expected);
+        println!("Actual   (lui): {:032b}", actual);
+        assert_eq!(actual, expected);
+    }
+    
+    #[test]
+    fn test_lw() {
+        // lw x3, 4(x1) -> 0b00000000000_00100_00001_00011_000110
+        let expected = 0b00000000000_00100_00001_00011_000110;
+        let actual = encode_lw(3, 1, 4);
+        println!("Expected (lw): {:032b}", expected);
+        println!("Actual   (lw): {:032b}", actual);
+        assert_eq!(actual, expected);
+    }
+    
+    #[test]
+    fn test_sw() {
+        // sw x2, 8(x1) -> 0b00000000000_00010_00001_01000_000111
+        let expected = 0b00000000000_00010_00001_01000_000111;
+        let actual = encode_sw(1, 2, 8);
+        println!("Expected (sw): {:032b}", expected);
+        println!("Actual   (sw): {:032b}", actual);
+        assert_eq!(actual, expected);
+    }
+    
+    #[test]
+    fn test_blt() {
+        // blt x4, x5, 16 -> 0b00000000000_00101_00100_10000_001000
+        let expected = 0b00000000000_00101_00100_10000_001000;
+        let actual = encode_blt(4, 5, 16);
+        println!("Expected (blt): {:032b}", expected);
+        println!("Actual   (blt): {:032b}", actual);
+        assert_eq!(actual, expected);
+    }
 }
 
 fn parse_reg(reg: &str) -> u8 {
@@ -103,9 +179,18 @@ fn parse_reg(reg: &str) -> u8 {
 
 fn parse_imm(imm_str: &str) -> i16 {
     if imm_str.starts_with("0x") {
-        i16::from_str_radix(&imm_str[2..], 16).unwrap()
+        // 处理十六进制值
+        println!("解析十六进制立即数: {}", imm_str);
+        let value = i16::from_str_radix(&imm_str[2..], 16).unwrap_or_else(|_| {
+            panic!("无效的十六进制立即数: {}", imm_str);
+        });
+        println!("解析结果: {}, 二进制表示: {:016b}", value, value);
+        value
     } else {
-        imm_str.parse().unwrap()
+        // 处理十进制值
+        imm_str.parse().unwrap_or_else(|_| {
+            panic!("无效的十进制立即数: {}", imm_str);
+        })
     }
 }
 
@@ -159,6 +244,59 @@ fn assemble(input: &str) -> Vec<u32> {
                 println!("处理bne指令: rs1={}, rs2={}, offset={}, opcode=0b{:06b}", rs1, rs2, offset, opcode);
                 let encoded = encode_bne(rs1, rs2, offset);
                 println!("bne编码结果: 0b{:032b}", encoded);
+                img.push(encoded);
+            }
+            "lui" => {
+                let rd = parse_reg(parts[1].trim_end_matches(','));
+                let imm = parse_imm(parts[2]);
+                
+                println!("处理lui指令: rd={}, imm={}", rd, imm);
+                let encoded = encode_lui(rd, imm);
+                println!("编码结果: 0b{:032b}", encoded);
+                img.push(encoded);
+            }
+            "lw" => {
+                // 处理格式如 lw x1, 4(x2) 的指令
+                let rd = parse_reg(parts[1].trim_end_matches(','));
+                
+                // 解析 4(x2) 格式
+                let offset_reg = parts[2];
+                let open_paren = offset_reg.find('(').unwrap_or_else(|| panic!("Invalid lw format: {}", offset_reg));
+                let close_paren = offset_reg.find(')').unwrap_or_else(|| panic!("Invalid lw format: {}", offset_reg));
+                
+                let offset = parse_imm(&offset_reg[0..open_paren]);
+                let rs1 = parse_reg(&offset_reg[open_paren+1..close_paren]);
+                
+                println!("处理lw指令: rd={}, rs1={}, offset={}", rd, rs1, offset);
+                let encoded = encode_lw(rd, rs1, offset);
+                println!("编码结果: 0b{:032b}", encoded);
+                img.push(encoded);
+            }
+            "sw" => {
+                // 处理格式如 sw x1, 4(x2) 的指令
+                let rs2 = parse_reg(parts[1].trim_end_matches(','));
+                
+                // 解析 4(x2) 格式
+                let offset_reg = parts[2];
+                let open_paren = offset_reg.find('(').unwrap_or_else(|| panic!("Invalid sw format: {}", offset_reg));
+                let close_paren = offset_reg.find(')').unwrap_or_else(|| panic!("Invalid sw format: {}", offset_reg));
+                
+                let offset = parse_imm(&offset_reg[0..open_paren]);
+                let rs1 = parse_reg(&offset_reg[open_paren+1..close_paren]);
+                
+                println!("处理sw指令: rs1={}, rs2={}, offset={}", rs1, rs2, offset);
+                let encoded = encode_sw(rs1, rs2, offset);
+                println!("编码结果: 0b{:032b}", encoded);
+                img.push(encoded);
+            }
+            "blt" => {
+                let rs1 = parse_reg(parts[1].trim_end_matches(','));
+                let rs2 = parse_reg(parts[2].trim_end_matches(','));
+                let offset = parse_imm(parts[3]);
+                
+                println!("处理blt指令: rs1={}, rs2={}, offset={}", rs1, rs2, offset);
+                let encoded = encode_blt(rs1, rs2, offset);
+                println!("编码结果: 0b{:032b}", encoded);
                 img.push(encoded);
             }
             "halt" => {
