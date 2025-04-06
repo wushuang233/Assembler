@@ -3,15 +3,17 @@ use std::io::{self, Read};
 use std::path::Path;
 
 // 常量定义
-const OPCODE_HALT: u32 = 0b000000;
-const OPCODE_ADD: u32 = 0b000001;
-const OPCODE_ADDI: u32 = 0b000010;
-const OPCODE_BNE: u32 = 0b000011;
-const OPCODE_MUL: u32 = 0b000100;
-const OPCODE_LUI: u32 = 0b000101;
-const OPCODE_LW: u32 = 0b000110;
-const OPCODE_SW: u32 = 0b000111;
-const OPCODE_BLT: u32 = 0b001000;
+const OPCODE_HALT: u32 = 0b000000;  // halt - 停止执行
+const OPCODE_ADD: u32 = 0b000001;   // add x[rd] = x[rs1] + x[rs2]
+const OPCODE_ADDI: u32 = 0b000010;  // addi x[rd] = x[rs1] + sext(imm)
+const OPCODE_BNE: u32 = 0b000011;   // bne 如果 rs1 != rs2，则 pc += sext(offset)
+const OPCODE_MUL: u32 = 0b000100;   // mul x[rd] = x[rs1] * x[rs2]
+const OPCODE_LUI: u32 = 0b000101;   // lui x[rd] = sext(imm) << 16
+const OPCODE_LW: u32 = 0b000110;    // lw x[rd] = M[x[rs1] + sext(imm)]
+const OPCODE_SW: u32 = 0b000111;    // sw M[x[rs1] + sext(imm)] = x[rs2]
+const OPCODE_BLT: u32 = 0b001000;   // blt 如果 rs1 <s rs2，则 pc += sext(offset)
+const OPCODE_SLLI: u32 = 0b001001;  // slli x[rd] = x[rs1] << imm
+const OPCODE_SUB: u32 = 0b001010;   // sub x[rd] = x[rs1] - x[rs2]
 
 // =================== 汇编器部分 ===================
 
@@ -29,8 +31,8 @@ fn encode_a(opcode: u32, rd: u8, rs1: u8, rs2: u8) -> u32 {
 // B类型指令编码（addi/lui/lw）
 // 格式: imm[16位]_rs1[5位]_rd[5位]_opcode[6位]
 fn encode_b(opcode: u32, rd: u8, rs1: u8, imm: i16) -> u32 {
-    // 保留立即数的所有16位
-    let imm_u32 = imm as u32 & 0xFFFF;
+    // 将有符号立即数转为无符号32位整数，保留符号
+    let imm_u32 = (imm as u32) & 0xFFFF;
     
     // 构建指令
     (imm_u32 << 16) |              // 16位立即数放在[31:16]
@@ -42,13 +44,15 @@ fn encode_b(opcode: u32, rd: u8, rs1: u8, imm: i16) -> u32 {
 // C类型指令编码（bne/sw/blt）
 // 格式: imm_high[31:21] rs2[20:16] rs1[15:11] imm_low[10:6] opcode[5:0]
 fn encode_c(opcode: u32, rs1: u8, rs2: u8, offset: i16) -> u32 {
+    // 处理有符号扩展
     let offset_u32 = offset as u32;
+    // 提取高11位和低5位
     let imm_high = (offset_u32 >> 5) & 0x7FF;
     let imm_low = offset_u32 & 0x1F;
     
     (imm_high << 21) |
-    ((rs2 as u32) << 16) |
-    ((rs1 as u32) << 11) |
+    ((rs1 as u32) << 16) |  // 交换rs1和rs2的位置
+    ((rs2 as u32) << 11) |  // 交换rs1和rs2的位置
     (imm_low << 6) |
     (opcode & 0x3F)
 }
@@ -79,11 +83,19 @@ fn encode_bne(rs1: u8, rs2: u8, offset: i16) -> u32 {
 }
 
 fn encode_sw(rs1: u8, rs2: u8, offset: i16) -> u32 {
-    encode_c(OPCODE_SW, rs1, rs2, offset)
+    encode_c(OPCODE_SW, rs2, rs1, offset)
 }
 
 fn encode_blt(rs1: u8, rs2: u8, offset: i16) -> u32 {
-    encode_c(OPCODE_BLT, rs1, rs2, offset)
+    encode_c(OPCODE_BLT, rs2, rs1, offset)
+}
+
+fn encode_slli(rd: u8, rs1: u8, imm: i16) -> u32 {
+    encode_b(OPCODE_SLLI, rd, rs1, imm)
+}
+
+fn encode_sub(rd: u8, rs1: u8, rs2: u8) -> u32 {
+    encode_a(OPCODE_SUB, rd, rs1, rs2)
 }
 
 fn encode_halt() -> u32 {
@@ -95,13 +107,33 @@ fn parse_reg(reg: &str) -> u8 {
 }
 
 fn parse_imm(imm_str: &str) -> i16 {
-    if imm_str.starts_with("0x") {
-        // 处理十六进制值
-        i16::from_str_radix(&imm_str[2..], 16).unwrap_or_else(|_| {
+    let imm_str = imm_str.trim();
+    
+    // 处理十六进制值
+    if imm_str.starts_with("0x") || imm_str.starts_with("0X") {
+        // 去掉0x前缀
+        let value_str = &imm_str[2..];
+        let value = i32::from_str_radix(value_str, 16).unwrap_or_else(|_| {
             panic!("无效的十六进制立即数: {}", imm_str);
+        });
+        
+        // 确保值在i16范围内，或者作为u16处理后解释为i16
+        if value > i16::MAX as i32 || value < i16::MIN as i32 {
+            // 超出i16范围，将高16位截断
+            println!("警告: 十六进制值 {} 超出i16范围，将被截断", imm_str);
+            return (value as u16) as i16;
+        }
+        
+        return value as i16;
+    } 
+    // 处理带+前缀的十进制数
+    else if imm_str.starts_with("+") {
+        imm_str[1..].parse().unwrap_or_else(|_| {
+            panic!("无效的十进制立即数: {}", imm_str);
         })
-    } else {
-        // 处理十进制值
+    } 
+    // 处理普通十进制数
+    else {
         imm_str.parse().unwrap_or_else(|_| {
             panic!("无效的十进制立即数: {}", imm_str);
         })
@@ -180,6 +212,18 @@ fn assemble(input: &str) -> Vec<u32> {
                 let offset = parse_imm(parts[3]);
                 img.push(encode_blt(rs1, rs2, offset));
             }
+            "slli" => {
+                let rd = parse_reg(parts[1].trim_end_matches(','));
+                let rs1 = parse_reg(parts[2].trim_end_matches(','));
+                let imm = parse_imm(parts[3]);
+                img.push(encode_slli(rd, rs1, imm));
+            }
+            "sub" => {
+                let rd = parse_reg(parts[1].trim_end_matches(','));
+                let rs1 = parse_reg(parts[2].trim_end_matches(','));
+                let rs2 = parse_reg(parts[3]);
+                img.push(encode_sub(rd, rs1, rs2));
+            }
             "halt" => {
                 img.push(encode_halt());
             },
@@ -199,7 +243,7 @@ fn write_object_file(img: &[u32], path: &str) -> io::Result<()> {
 
 // =================== 反汇编器部分 ===================
 
-// 解码A类型指令（add/mul）
+// 解码A类型指令（add/mul/sub）
 fn decode_a_type(instr: u32) -> String {
     let opcode = instr & 0x3F;
     let rd = (instr >> 6) & 0x1F;
@@ -209,11 +253,12 @@ fn decode_a_type(instr: u32) -> String {
     match opcode {
         OPCODE_ADD => format!("add x{}, x{}, x{}", rd, rs1, rs2),
         OPCODE_MUL => format!("mul x{}, x{}, x{}", rd, rs1, rs2),
+        OPCODE_SUB => format!("sub x{}, x{}, x{}", rd, rs1, rs2),
         _ => format!("未知A型指令: 0x{:08X}", instr),
     }
 }
 
-// 解码B类型指令（addi/lui/lw）
+// 解码B类型指令（addi/lui/lw/slli）
 fn decode_b_type(instr: u32) -> String {
     let opcode = instr & 0x3F;
     let rd = (instr >> 6) & 0x1F;
@@ -224,6 +269,7 @@ fn decode_b_type(instr: u32) -> String {
         OPCODE_ADDI => format!("addi x{}, x{}, {}", rd, rs1, imm),
         OPCODE_LUI => format!("lui x{}, {}", rd, imm),
         OPCODE_LW => format!("lw x{}, {}(x{})", rd, imm, rs1),
+        OPCODE_SLLI => format!("slli x{}, x{}, {}", rd, rs1, imm),
         _ => format!("未知B型指令: 0x{:08X}", instr),
     }
 }
@@ -232,8 +278,8 @@ fn decode_b_type(instr: u32) -> String {
 fn decode_c_type(instr: u32) -> String {
     let opcode = instr & 0x3F;
     let imm_low = (instr >> 6) & 0x1F;
-    let rs1 = (instr >> 11) & 0x1F;
-    let rs2 = (instr >> 16) & 0x1F;
+    let rs2 = (instr >> 11) & 0x1F;  // 交换rs1和rs2的位置
+    let rs1 = (instr >> 16) & 0x1F;  // 交换rs1和rs2的位置
     let imm_high = (instr >> 21) & 0x7FF;
     
     // 组合立即数
@@ -262,8 +308,8 @@ fn decode_instruction(instr: u32) -> String {
     
     match opcode {
         OPCODE_HALT => decode_halt(instr),
-        OPCODE_ADD | OPCODE_MUL => decode_a_type(instr),
-        OPCODE_ADDI | OPCODE_LUI | OPCODE_LW => decode_b_type(instr),
+        OPCODE_ADD | OPCODE_MUL | OPCODE_SUB => decode_a_type(instr),
+        OPCODE_ADDI | OPCODE_LUI | OPCODE_LW | OPCODE_SLLI => decode_b_type(instr),
         OPCODE_BNE | OPCODE_SW | OPCODE_BLT => decode_c_type(instr),
         _ => format!("未知指令: 0x{:08X}", instr),
     }
@@ -454,8 +500,8 @@ mod tests {
 
     #[test]
     fn test_encode_bne() {
-        // bne x3, x2, -8 → 0b11111111111_00010_00011_11000_000011
-        let expected = 0b11111111111_00010_00011_11000_000011;
+        // bne x3, x2, -8 -> 0b11111111111_00011_00010_11000_000011
+        let expected = 0b11111111111_00011_00010_11000_000011;
         let actual = encode_bne(3, 2, -8);
         assert_eq!(actual, expected);
     }
@@ -506,21 +552,21 @@ mod tests {
     #[test]
     fn test_decode_bne() {
         // bne x3, x2, -8
-        let instr = 0b11111111111_00010_00011_11000_000011;
+        let instr = 0b11111111111_00011_00010_11000_000011;
         assert_eq!(decode_instruction(instr), "bne x3, x2, -8");
     }
 
     #[test]
     fn test_decode_sw() {
         // sw x2, 8(x1)
-        let instr = 0b00000000000_00010_00001_01000_000111;
+        let instr = 0b00000000000_00001_00010_01000_000111;
         assert_eq!(decode_instruction(instr), "sw x2, 8(x1)");
     }
 
     #[test]
     fn test_decode_blt() {
         // blt x4, x5, 16
-        let instr = 0b00000000000_00101_00100_10000_001000;
+        let instr = 0b00000000000_00100_00101_10000_001000;
         assert_eq!(decode_instruction(instr), "blt x4, x5, 16");
     }
 
@@ -559,5 +605,35 @@ mod tests {
                 assert_eq!(decoded, test_str, "指令编码后解码不匹配: {}", test_str);
             }
         }
+    }
+
+    #[test]
+    fn test_encode_slli() {
+        // slli x1, x2, 3 -> 0b00000000000_00011_00010_00001_001001
+        let expected = 0b00000000000_00011_00010_00001_001001;
+        let actual = encode_slli(1, 2, 3);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_encode_sub() {
+        // sub x3, x4, x5 -> 0b00000000000_00101_00100_00011_001010
+        let expected = 0b00000000000_00101_00100_00011_001010;
+        let actual = encode_sub(3, 4, 5);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_decode_slli() {
+        // slli x1, x2, 3
+        let instr = 0b00000000000_00011_00010_00001_001001;
+        assert_eq!(decode_instruction(instr), "slli x1, x2, 3");
+    }
+
+    #[test]
+    fn test_decode_sub() {
+        // sub x3, x4, x5
+        let instr = 0b00000000000_00101_00100_00011_001010;
+        assert_eq!(decode_instruction(instr), "sub x3, x4, x5");
     }
 }
