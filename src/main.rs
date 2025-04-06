@@ -226,24 +226,9 @@ fn main() {
     
     // 输出生成的指令（二进制形式）并同时写入文本文件
     let mut text_output = String::new();
-    text_output.push_str(&format!("# 汇编文件: {}\n", input_file));
-    text_output.push_str("# 生成的指令（二进制格式）:\n");
     
     println!("生成的指令（二进制格式）:");
     for (i, &instr) in img.iter().enumerate() {
-        // 获取汇编指令的注释
-        let comment = match i {
-            0 => "// addi, R(1) = R(0) + 0",
-            1 => "// addi, R(2) = R(0) + 10", 
-            2 => "// addi, R(3) = R(0) + 0",
-            3 => "// addi, R(3) = R(3) + 1",
-            4 if base_name == "sum" => "// add, R(1) = R(1) + R(3)",
-            4 if base_name == "factorial" => "// mul, R(1) = R(1) * R(3)",
-            5 => "// bne, if (R(3) != R(2)) pc += -0x8",
-            6 => "// halt",
-            _ => "",
-        };
-        
         // 使用下划线分割二进制表示
         let binary_str = format!("{:032b}", instr);
         let formatted_binary = format!("0b{}_{}_{}_{}_{}", 
@@ -254,12 +239,10 @@ fn main() {
             &binary_str[26..32]);
             
         // 输出到控制台
-        let line = format!("指令 {}: {} (十六进制: 0x{:08X})\n        {}", 
-            i+1, formatted_binary, instr, comment);
-        println!("{}", line.trim());
+        println!("指令 {}: {} (十六进制: 0x{:08X})", i+1, formatted_binary, instr);
         
-        // 添加到文本输出
-        text_output.push_str(&format!("{}\n        {},\n", comment, formatted_binary));
+        // 添加到文本输出 - 只包含二进制指令，不包含注释
+        text_output.push_str(&format!("{}\n", formatted_binary));
     }
     
     // 将二进制指令写入.o文件
@@ -280,11 +263,10 @@ fn main() {
 
 // ================== 目标文件生成 ==================
 fn write_object_file(img: &[u32], path: &str) -> std::io::Result<()> {
-    let mut buf = Vec::with_capacity(8 + img.len() * 4);
-    buf.extend(0xC0FFEEu32.to_be_bytes()); // 魔数
-    buf.extend((img.len() as u32).to_be_bytes());
+    let mut buf = Vec::with_capacity(img.len() * 4);
+    // 直接输出指令内容，不包含魔数和指令数量，使用小端序
     for &word in img {
-        buf.extend(word.to_be_bytes());
+        buf.extend(word.to_le_bytes()); // 使用小端序
     }
     std::fs::write(path, buf)?;
     Ok(())
