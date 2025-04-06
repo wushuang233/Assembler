@@ -1,6 +1,8 @@
 [package]
-name = "assembler"
+name = "riscv-tools"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+description = "RISC-V简易汇编器和反汇编器工具集"
+authors = ["Your Name"]
 
 [dependencies]
